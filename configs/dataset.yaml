@@ -1,0 +1,21 @@
+sources:
+  sigma_repo: "https://github.com/SigmaHQ/sigma.git"
+  yara_forge: "https://github.com/YARAHQ/yara-forge.git"
+  mitre_stix: "https://github.com/mitre-attack/attack-stix-data.git"
+
+dataset:
+  target_per_task: 200
+  difficulty_distribution:
+    easy: 60
+    medium: 80
+    hard: 60
+  min_components: 3
+
+description:
+  model: "gpt-4o"
+  max_concurrent: 10
+  cost_limit_usd: 50.0
+
+split:
+  test_size: 600
+  seed: 42
