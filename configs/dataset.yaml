@@ -26,5 +26,5 @@ split:
   seed: 42
 
 training:
-  sft_per_task: 6000
+  sft_per_task: 3000
   rl_per_task: 10000
