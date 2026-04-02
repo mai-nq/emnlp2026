@@ -95,51 +95,75 @@ def extract(ctx):
 
 @cli.command()
 @click.option("--task", type=click.Choice(["sigma", "yara", "stix", "all"]), default="all")
+@click.option("--pool", type=click.Choice(["test", "sft", "rl", "all"]), default="all",
+              help="Which pool to describe: test, sft, rl, or all")
+@click.option("--api-key", envvar="OPENROUTER_API_KEY", help="OpenRouter API key")
 @click.pass_context
-def describe(ctx, task):
-    """Generate NL descriptions via GPT-4o for extracted instances."""
+def describe(ctx, task, pool, api_key):
+    """Generate NL descriptions via OpenRouter API (hybrid model strategy)."""
     config = ctx.obj["config"]
-    extracted_dir = Path("data/extracted")
-    out_dir = Path("data/described")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    desc_cfg = config["description"]
+    max_concurrent = desc_cfg["max_concurrent"]
+    cost_limit = desc_cfg["cost_limit_usd"]
 
     from openai import AsyncOpenAI
     from src.describers.gpt4o_describer import describe_batch
 
-    client = AsyncOpenAI()
-    model = config["description"]["model"]
-    max_concurrent = config["description"]["max_concurrent"]
-    cost_limit = config["description"]["cost_limit_usd"]
+    base_url = desc_cfg.get("base_url", "https://openrouter.ai/api/v1")
+    client = AsyncOpenAI(base_url=base_url, api_key=api_key)
 
-    tasks = ["sigma", "yara", "stix"] if task == "all" else [task]
+    # Model per pool
+    model_map = {
+        "test": desc_cfg.get("test_model", "anthropic/claude-sonnet-4-6"),
+        "sft": desc_cfg.get("sft_model", "anthropic/claude-sonnet-4-6"),
+        "rl": desc_cfg.get("rl_model", "openai/gpt-4o-mini"),
+    }
+
+    pools_to_run = ["test", "sft", "rl"] if pool == "all" else [pool]
+    tasks_to_run = ["sigma", "yara", "stix"] if task == "all" else [task]
     total_cost = 0.0
 
-    for t in tasks:
-        input_path = extracted_dir / f"{t}.jsonl"
-        if not input_path.exists():
-            click.echo(f"Skipping {t}: {input_path} not found", err=True)
-            continue
+    for p in pools_to_run:
+        model = model_map[p]
+        pool_dir = Path(f"data/splits/{p}")
+        out_dir = Path(f"data/described/{p}")
+        out_dir.mkdir(parents=True, exist_ok=True)
 
-        instances = read_jsonl(input_path)
-        # Skip already described
-        instances = [i for i in instances if not i.get("nl_description")]
+        for t in tasks_to_run:
+            input_path = pool_dir / f"{t}.jsonl"
+            if not input_path.exists():
+                click.echo(f"Skipping {p}/{t}: {input_path} not found", err=True)
+                continue
 
-        if not instances:
-            click.echo(f"All {t} instances already described")
-            continue
+            instances = read_jsonl(input_path)
+            # Skip already described
+            already_done = set()
+            out_path = out_dir / f"{t}.jsonl"
+            if out_path.exists():
+                done = read_jsonl(out_path)
+                already_done = {d["gold_artifact"][:100] for d in done if d.get("nl_description")}
+            todo = [i for i in instances if i["gold_artifact"][:100] not in already_done]
 
-        if total_cost >= cost_limit:
-            click.echo(f"Cost limit ${cost_limit} reached. Stopping.", err=True)
-            break
+            if not todo:
+                click.echo(f"[{p}] All {t} instances already described")
+                continue
 
-        click.echo(f"Describing {len(instances)} {t} instances...")
-        results, cost = asyncio.run(
-            describe_batch(instances, client, model=model, max_concurrent=max_concurrent)
-        )
-        total_cost += cost
+            if total_cost >= cost_limit:
+                click.echo(f"Cost limit ${cost_limit} reached. Stopping.", err=True)
+                return
 
-        write_jsonl(results, out_dir / f"{t}.jsonl")
-        click.echo(f"Described {len(results)} {t} instances (cost: ${cost:.4f})")
+            click.echo(f"[{p}] Describing {len(todo)}/{len(instances)} {t} instances with {model}...")
+            results, cost = asyncio.run(
+                describe_batch(todo, client, model=model, max_concurrent=max_concurrent)
+            )
+            total_cost += cost
+
+            # Append to existing results
+            if already_done and out_path.exists():
+                write_jsonl(results, out_path, append=True)
+            else:
+                write_jsonl(results, out_path)
+            click.echo(f"[{p}] Described {len(results)} {t} instances (cost: ${cost:.4f})")
 
     click.echo(f"Total description cost: ${total_cost:.4f}")
 
@@ -171,36 +195,103 @@ def annotate(ctx):
 @cli.command()
 @click.pass_context
 def split(ctx):
-    """Deduplicate and split into train/test sets."""
+    """Deduplicate and split into test / sft / rl / remaining pools.
+
+    Writes per-task JSONL files to data/splits/{test,sft,rl}/ for the
+    describe step, and also writes merged files to data/final/.
+    """
+    import random as stdlib_random
+
     config = ctx.obj["config"]
-    described_dir = Path("data/described")
-    out_dir = Path("data/final")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    extracted_dir = Path("data/described")  # annotated data lives here
+    splits_dir = Path("data/splits")
+    final_dir = Path("data/final")
 
     # Merge all tasks
     all_instances = []
     for task_file in ["sigma.jsonl", "yara.jsonl", "stix.jsonl"]:
-        path = described_dir / task_file
+        path = extracted_dir / task_file
         if path.exists():
             all_instances.extend(read_jsonl(path))
 
     # Dedup
     unique = deduplicate(all_instances)
 
-    # Split first, then assign IDs (so IDs are contiguous within each split)
+    # --- Test split (stratified by difficulty) ---
     test_size = config["split"]["test_size"]
     seed = config["split"]["seed"]
     test_per_task = test_size // 3
 
-    train, test = split_dataset(unique, test_per_task=test_per_task, seed=seed)
+    diff_dist = config.get("dataset", {}).get("difficulty_distribution")
+    train_pool, test = split_dataset(unique, test_per_task=test_per_task, seed=seed, difficulty_dist=diff_dist)
 
-    # Assign sequential IDs within each split
-    train = assign_ids(train)
+    # --- SFT and RL splits from train_pool ---
+    train_cfg = config.get("training", {})
+    sft_per_task = train_cfg.get("sft_per_task", 6000)
+    rl_per_task = train_cfg.get("rl_per_task", 10000)
+
+    rng = stdlib_random.Random(seed)
+
+    # Group train_pool by task
+    by_task = {}
+    for inst in train_pool:
+        by_task.setdefault(inst["task"], []).append(inst)
+
+    sft_instances = []
+    rl_instances = []
+    remaining = []
+
+    for task, pool in by_task.items():
+        rng.shuffle(pool)
+        sft_n = min(sft_per_task, len(pool))
+        sft_instances.extend(pool[:sft_n])
+
+        leftover = pool[sft_n:]
+        rl_n = min(rl_per_task, len(leftover))
+        rl_instances.extend(leftover[:rl_n])
+
+        remaining.extend(leftover[rl_n:])
+
+    # Assign IDs
     test = assign_ids(test)
+    sft_instances = assign_ids(sft_instances)
+    rl_instances = assign_ids(rl_instances)
 
-    write_jsonl(train, out_dir / "train.jsonl")
-    write_jsonl(test, out_dir / "test.jsonl")
-    click.echo(f"Split: {len(test)} test, {len(train)} train")
+    # --- Write per-task files for describe step ---
+    task_map = {"T-SIGMA": "sigma", "T-YARA": "yara", "T-STIX": "stix"}
+
+    for split_name, instances in [("test", test), ("sft", sft_instances), ("rl", rl_instances)]:
+        split_dir = splits_dir / split_name
+        split_dir.mkdir(parents=True, exist_ok=True)
+        by_t = {}
+        for inst in instances:
+            by_t.setdefault(inst["task"], []).append(inst)
+        for task_key, insts in by_t.items():
+            fname = task_map.get(task_key, task_key.lower().replace("t-", "")) + ".jsonl"
+            write_jsonl(insts, split_dir / fname)
+
+    # --- Write merged final files ---
+    final_dir.mkdir(parents=True, exist_ok=True)
+    write_jsonl(test, final_dir / "test.jsonl")
+    click.echo(f"Test:  {len(test)} instances")
+
+    write_jsonl(sft_instances, final_dir / "sft.jsonl")
+    click.echo(f"SFT:   {len(sft_instances)} instances ({sft_per_task}/task target)")
+
+    write_jsonl(rl_instances, final_dir / "rl.jsonl")
+    click.echo(f"RL:    {len(rl_instances)} instances ({rl_per_task}/task target)")
+
+    write_jsonl(remaining, final_dir / "remaining.jsonl")
+    click.echo(f"Remaining: {len(remaining)} (CPT corpus)")
+
+    # Summary per task
+    click.echo("\nPer-task breakdown:")
+    for split_name, instances in [("test", test), ("sft", sft_instances), ("rl", rl_instances)]:
+        by_t = {}
+        for inst in instances:
+            by_t.setdefault(inst["task"], 0)
+            by_t[inst["task"]] += 1
+        click.echo(f"  {split_name}: {dict(sorted(by_t.items()))}")
 
 
 @cli.command()

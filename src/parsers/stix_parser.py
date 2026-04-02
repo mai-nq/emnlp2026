@@ -62,6 +62,10 @@ def extract_technique_bundles(bundle_path: Path) -> list[dict]:
         logger.warning("Failed to load STIX bundle: %s", bundle_path)
         return []
 
+    if not isinstance(full_bundle, dict):
+        logger.warning("Skipping non-bundle STIX file: %s", bundle_path)
+        return []
+
     objects = full_bundle.get("objects", [])
     obj_by_id = {o["id"]: o for o in objects if "id" in o}
 

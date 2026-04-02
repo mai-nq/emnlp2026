@@ -9,6 +9,9 @@ logger = setup_logging("gpt4o_describer")
 PRICING = {
     "gpt-4o": {"input": 2.50, "output": 10.00},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+    "openai/gpt-4o-mini": {"input": 0.15, "output": 0.60},
+    "anthropic/claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
+    "anthropic/claude-sonnet-4.6": {"input": 3.00, "output": 15.00},
 }
 
 PROMPT_TEMPLATES = {

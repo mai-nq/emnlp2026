@@ -88,6 +88,7 @@ def test_extract_annotate_split_pipeline(tmp_dir):
         },
         "description": {"model": "gpt-4o", "max_concurrent": 1, "cost_limit_usd": 0},
         "split": {"test_size": 15, "seed": 42},
+        "training": {"sft_per_task": 5, "rl_per_task": 5},
     }
     config_path.write_text(yaml.dump(config))
 
@@ -125,11 +126,12 @@ def test_extract_annotate_split_pipeline(tmp_dir):
         # Split
         result = runner.invoke(cli, ["--config", str(config_path), "split"])
         assert result.exit_code == 0, result.output
-        assert "Split" in result.output
+        assert "Test:" in result.output
 
         # Verify final files
         assert (tmp_dir / "data" / "final" / "test.jsonl").exists()
-        assert (tmp_dir / "data" / "final" / "train.jsonl").exists()
+        assert (tmp_dir / "data" / "final" / "sft.jsonl").exists()
+        assert (tmp_dir / "data" / "final" / "rl.jsonl").exists()
 
         # Validate
         result = runner.invoke(cli, ["--config", str(config_path), "validate"])

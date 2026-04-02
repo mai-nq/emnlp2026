@@ -1,21 +1,30 @@
 sources:
   sigma_repo: "https://github.com/SigmaHQ/sigma.git"
-  yara_forge: "https://github.com/YARAHQ/yara-forge.git"
+  yara_forge: "https://github.com/Yara-Rules/rules.git"
   mitre_stix: "https://github.com/mitre-attack/attack-stix-data.git"
 
 dataset:
-  target_per_task: 200
+  target_per_task: 700
   difficulty_distribution:
-    easy: 60
-    medium: 80
-    hard: 60
+    easy: 210
+    medium: 280
+    hard: 210
   min_components: 3
 
 description:
-  model: "gpt-4o"
-  max_concurrent: 10
-  cost_limit_usd: 50.0
+  # OpenRouter base URL — compatible with OpenAI SDK
+  base_url: "https://openrouter.ai/api/v1"
+  # Hybrid: Sonnet for test+SFT, gpt-4o-mini for RL
+  test_model: "anthropic/claude-sonnet-4-6"
+  sft_model: "anthropic/claude-sonnet-4-6"
+  rl_model: "openai/gpt-4o-mini"
+  max_concurrent: 20
+  cost_limit_usd: 200.0
 
 split:
-  test_size: 600
+  test_size: 2100
   seed: 42
+
+training:
+  sft_per_task: 6000
+  rl_per_task: 10000
