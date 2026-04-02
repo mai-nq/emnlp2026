@@ -1,0 +1,29 @@
+[project]
+name = "cyberoutputbench"
+version = "0.1.0"
+description = "Dataset construction pipeline for CyberOutputBench"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.0",
+    "pyyaml>=6.0",
+    "plyara>=2.1",
+    "yara-python>=4.3",
+    "pySigma>=0.10",
+    "stix2-validator>=3.0",
+    "stix2>=3.0",
+    "openai>=1.0",
+    "aiohttp>=3.9",
+    "tqdm>=4.65",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-asyncio>=0.21"]
+
+[project.scripts]
+build-dataset = "scripts.build_dataset:cli"
+
+[tool.setuptools.packages.find]
+include = ["src*", "scripts*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
